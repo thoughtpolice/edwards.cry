@@ -1,0 +1,247 @@
+module Curve where
+
+/* -------------------------------------------------------------------------- */
+
+// ax^2 + y^2 = 1 + dx^2y^2
+
+parameter
+    type W : #       // width
+    type P : #       // prime
+    type C : #       // cofactor
+    n      : [W]     // order
+
+    // parameters
+    a      : Z P
+    d      : Z P
+
+    // base point
+    Gx     : Z P
+    Gy     : Z P
+
+    // param constraints
+    type constraint
+      ( fin P, P >= 5, P % 4 == 3
+      , fin W, W >= 2
+      , fin C, C >= 1, width C <= W /* must be a power of 2? */
+      )
+
+/* -------------------------------------------------------------------------- */
+
+// Extended coordinate system:
+//    https://www.hyperelliptic.org/EFD/g1p/auto-twisted-extended.html
+//
+//    x  = X / Z
+//    y  = Y / Z
+//    xy = T / Z
+//
+//  therefore, affine projection defined by is
+//    ( x, y ) -> ( x, y, 1, xy )
+//
+//  NB: project/contract do NOT form a trivial identity! equality may only be
+//  defined over contraction (i.e. we quotient over 'contract')
+
+type Affine = ( [W], [W] )
+type Point  = ( Z P, Z P, Z P, Z P ) // ( X, Y, Z, T )
+
+project : Affine -> Point
+project ( X, Y ) = ( x, y, 1, x * y )
+  where
+    x = fromAffine X : Z P
+    y = fromAffine Y : Z P
+
+contract : Point -> Affine
+contract ( X, Y, Z, _ ) = ( toAffine (X %/ Z), toAffine (Y %/ Z) )
+
+(==.) : Point -> Point -> Bool
+x ==. y = contract x == contract y
+
+/* -------------------------------------------------------------------------- */
+
+// identity and generator points
+Zp = ( 0, 1, 1, 0 )         : Point
+Gp = ( Gx, Gy, 1, Gx * Gy ) : Point
+
+/* -------------------------------------------------------------------------- */
+
+// point addition
+add : Point -> Point -> Point
+add (X1, Y1, Z1, T1) (X2, Y2, Z2, T2) = (X3, Y3, Z3, T3)
+  where
+    // add-2008-hwcd, strongly unified
+    // cost: 9M + 1*a + 1*d + 7add -- 9M + 1*a + 6add, dependent upon the first point
+    A  = X1*X2
+    B  = Y1*Y2
+    C  = T1*d*T2
+    D  = Z1*Z2
+    E  = (X1+Y1)*(X2+Y2)-A-B
+    F  = D-C
+    G  = D+C
+    H  = B-a*A
+    X3 = E*F
+    Y3 = G*H
+    T3 = E*H
+    Z3 = F*G
+
+// (explicit) point doubling
+dbl : Point -> Point
+dbl (X1, Y1, Z1, _) = (X3, Y3, Z3, T3)
+  where
+    // dbl-2008-hwcd
+    // cost: 4M + 4S + 1*a + 6add + 1*2
+    A  = X1*X1
+    B  = Y1*Y1
+    C  = 2*Z1*Z1
+    D  = a*A
+    J  = X1+Y1
+    E  = (J*J)-A-B
+    G  = D+B
+    F  = G-C
+    H  = D-B
+    X3 = E*F
+    Y3 = G*H
+    T3 = E*H
+    Z3 = F*G
+
+// infix operator
+(+.) = add
+
+/* -------------------------------------------------------------------------- */
+
+//  monty(K, P):
+//    R0 = Zp
+//    R1 = P
+//    for bit in K
+//      if bit set
+//        R0 = R0 + R1
+//        R1 = 2 * R1
+//      else
+//        R1 = R0 + R1
+//        R0 = 2 * R0
+//    return R0
+
+monty : [W] -> Point -> Point
+monty k p = loop Zp p (`W : [ width W ])
+  where
+    loop r0 r1 i = if i == 0 then r0 else
+      if k ! (i-1)
+        then loop (r0 +. r1) (r1 +. r1) (i-1) // R0 = R0 + R1; R1 = 2 * R1
+        else loop (r0 +. r0) (r0 +. r1) (i-1) // R1 = R0 + R1; R0 = 2 * R0
+
+// infix operator
+(*.) = monty
+
+/* -------------------------------------------------------------------------- */
+
+type S = (W + 8) / 8
+
+scalar
+  : { w }
+  ( fin w, W <= w, w <= S*8
+  ) => [w]
+    -> [w]
+scalar k = mask2 || (mask1 && (mask0 && k))
+  where
+    mask0 = ~ (`C - 1) : [ w ]                 // 0: clear cofactor bits
+    mask1 = zext (~ zero : [ W ])              // 1: clean top bits
+    mask2 = zext ([ True ] # (zero : [ W-1 ])) // 2: clamp top key bit to 1
+
+/* -------------------------------------------------------------------------- */
+
+// simple point compression scheme
+//
+//   every twisted edwards curve :
+//       ax^2 + y^2 = 1 + dx^2y^2
+//
+//   can be reformulated to derive y^2:
+//       y^2 = (1-ax^2)/(1-dx^2)
+//       y   = sqrt((1-ax^2)/(1-dx^2))
+//
+//  therefore, for any value of x, there are two values of y: a positive and
+//  negative value. one bit can distinguish them.
+//
+//  to compress, we take the sign bit of y and append it to x,
+//  compressing the point into a single number with the attached bit all
+//  at once.
+//
+//  to decompress, we have to do an extra conversion of the incoming point
+//  using the above equation, then add the sign bit back.
+//
+//  given P = 3 mod 4 (type checked), computing sqrt can be done with:
+//      y = z^^(p+1)/4 mod P
+
+compress : Point -> [1+W]
+compress p = [ head y ] # x where (x, y) = contract p
+
+decompress : [1+W] -> Point
+decompress cx = project ( tail cx, toAffine y' )
+  where
+    x = fromAffine (tail cx)
+    y = modsqrt ((1 - (a*x*x)) %/ (1 - (d*x*x)))
+
+    sign = [ head cx ]
+    y' = if (toAffine y && 1) != zext sign then ((fromInteger `P) - y) else y
+
+/* -------------------------------------------------------------------------- */
+
+// create a valid curve point for testing; multiplies any arbitrary scalar
+// by the base point. this is effectively a random pubkey generator
+makePoint : [W] -> Point
+makePoint g = monty (scalar g) Gp
+
+property cofactor_pow2 = (c && (c - 1)) == 0
+  where c = `C : [C]
+
+// forall p. p + 0 = p
+property identity_point g = p +. Zp ==. p
+  where p = makePoint g
+
+// forall p. add(p, p) == dbl(p)
+property unified_add_1 g = (p +. p) ==. dbl p
+  where p = makePoint g
+
+// G * order(G) = 0
+property subgroup_zero = Zp ==. monty n Gp
+
+// check that the monty ladder is equivalent to a non-constant-time
+// double-and-add algorithm
+property monty_ok v g = monty l j ==. doublenadd l j
+  where l = scalar v
+        j = makePoint g
+
+        doublenadd : [W] -> Point -> Point
+        doublenadd = loop Zp
+          where
+            loop s k p = if k == 0 then s else
+              if (k ! 0)
+                then loop (s +. p) (k >> 1) (p +. p)
+                else loop s        (k >> 1) (p +. p)
+
+property compression_ok g = p ==. decompress (compress p)
+  where p = makePoint g
+
+/* -------------------------------------------------------------------------- */
+
+private
+  // bit n: Return an integer with the n'th bit set.
+  bit : {a} (fin a, a >= 2) => [a] -> [a]
+  bit x = 2 ^^ x
+
+  // modular square root.
+  modsqrt : Z P -> Z P
+  modsqrt z = z ^^ exp
+    where exp = (fromInteger ((`P + 1) / 4)) : Z P
+
+  // modular inversion: fermat's little theorem
+  modinv : {p} (fin p, p >= 2) => Z p -> Z p
+  modinv x = x ^^ `(p - 2)
+
+  // modular division
+  w %/ v = w * modinv v
+
+  // type munging
+  toAffine : Z P -> [W]
+  toAffine z = fromInteger (fromZ z)
+
+  // type munging
+  fromAffine : [W] -> Z P
+  fromAffine z = fromInteger (toInteger z)

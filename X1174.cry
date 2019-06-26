@@ -1,0 +1,22 @@
+module X1174 = Curve where
+
+ // curve1174 implementation
+ //
+ //     equation (untwisted curve) :     x^2+y^2 = 1-1174x^2y^2
+ //     base points x,y            :     ( 0x37fbb0cea308c479343aee7c029a190c021d96a492ecd6516123f27bce29eda, 0x6b72f82d47fb7cc6656841169840e0c4fe2dee2af3f976ba4ccb1bf9b46360e )
+ //     field                      :     3618502788666131106986593281521497120414687020801267626233049500247285301239
+ //                                    = 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7
+ //                                    = 2^251 - 9
+ //     curve order                :     904625697166532776746648320380374280092339035279495474023489261773642975601
+ //                                    = 0x1fffffffffffffffffffffffffffffff77965c4dfd307348944d45fd166c971
+ //                                    = 2^249 - 11332719920821432534773113288178349711
+
+type W = 251
+type P = 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7
+type C = 4
+
+n      = 904625697166532776746648320380374280092339035279495474023489261773642975601
+a      = 1
+d      = -1174
+Gx     = 1582619097725911541954547006453739763381091388846394833492296309729998839514
+Gy     = 3037538013604154504764115728651437646519513534305223422754827055689195992590
